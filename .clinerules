@@ -72,6 +72,7 @@
    - MIB structure must be clearly defined
    - Hardware connections must be documented
    - Configuration options must be explained
+   - TODO.md must be updated when tasks are completed
 
 2. User Documentation
    - CLI commands must be documented
