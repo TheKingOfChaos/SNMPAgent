@@ -1,20 +1,24 @@
 #include <Arduino.h>
+#include "pico/stdlib.h"
+#include "pico/multicore.h"
 #include "W5500.h"
 #include "UDPStack.h"
 #include "Settings.h"
 #include "FactoryReset.h"
-#include "pico/multicore.h"
+#include "SerialCom.h"
+#include "CLI.h"
 
-// GPIO Configuration (from .clinerules)
-#define POWER_MONITOR_PIN 27  // GPIO27 for mains power detection
+// Pin Definitions
+const uint8_t POWER_MONITOR_PIN = 27;  // GPIO27 for mains power detection
+const uint8_t LED_PIN = LED_BUILTIN;
 
 // W5500 Pin Configuration
-#define W5500_MISO     16
-#define W5500_CS       17
-#define W5500_SCK      18
-#define W5500_MOSI     19
-#define W5500_RST      20
-#define W5500_INT      21
+const uint8_t W5500_MISO = 16;
+const uint8_t W5500_CS   = 17;
+const uint8_t W5500_SCK  = 18;
+const uint8_t W5500_MOSI = 19;
+const uint8_t W5500_RST  = 20;
+const uint8_t W5500_INT  = 21;
 
 // Default MAC Address
 uint8_t mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
@@ -26,9 +30,11 @@ UDPStack udp(eth);
 // Global objects
 SettingsManager settings;
 FactoryResetHandler factoryReset(settings);
+SerialCom serial;
+CLI cliHandler(serial, settings);
 
 // Core 1 entry point - handles GPIO and power monitoring
-void core1_main() {
+void core1_entry() {
     // Initialize power monitoring pin
     pinMode(POWER_MONITOR_PIN, INPUT);
     
@@ -53,13 +59,17 @@ void core1_main() {
 }
 
 void setup() {
+    // Initialize LED
+    pinMode(LED_PIN, OUTPUT);
+    
+    // Initialize serial communication
+    serial.init();
+    serial.sendln("SNMP Client Starting...");
+    
     // Load settings before network initialization
     if (!settings.loadSettings()) {
-        Serial.println("Using default settings");
+        serial.sendln("Using default settings");
     }
-    // Initialize serial for debugging
-    Serial.begin(115200);
-    Serial.println("SNMP Client Starting...");
     
     // Configure SPI pins for W5500
     pinMode(W5500_MISO, INPUT);
@@ -68,12 +78,13 @@ void setup() {
     
     // Initialize W5500
     if (!eth.begin()) {
-        Serial.println("Failed to initialize W5500!");
+        serial.sendln("Failed to initialize W5500!");
         while (1) delay(1000); // Halt if W5500 init fails
     }
     
     // Launch Core 1
-    multicore_launch_core1(core1_main);
+    multicore_fifo_push_blocking(0);
+    multicore_launch_core1(core1_entry);
     
     // Set MAC address
     eth.setMAC(mac);
@@ -81,34 +92,34 @@ void setup() {
     // Start DHCP if enabled in settings, otherwise use static IP
     const DeviceSettings& deviceSettings = settings.getSettings();
     if (deviceSettings.dhcpEnabled) {
-        Serial.println("Starting DHCP...");
+        serial.sendln("Starting DHCP...");
         if (!udp.startDHCP()) {
-            Serial.println("DHCP failed! Check network connection.");
+            serial.sendln("DHCP failed! Check network connection.");
             while (1) delay(1000); // Halt if DHCP fails
         }
     } else {
-        Serial.println("Using static IP configuration...");
-        eth.setIPAddress(deviceSettings.staticIP);
-        eth.setSubnetMask(deviceSettings.subnetMask);
+        serial.sendln("Using static IP configuration...");
+        eth.setIP(deviceSettings.staticIP);
+        eth.setSubnet(deviceSettings.subnetMask);
         eth.setGateway(deviceSettings.gateway);
         if (!eth.begin()) {
-            Serial.println("Static IP configuration failed!");
+            serial.sendln("Static IP configuration failed!");
             while (1) delay(1000);
         }
     }
     
-    Serial.println("Network initialization complete!");
+    serial.sendln("Network initialization complete!");
     
-    // Update uptime periodically
+    // Update uptime initially
     settings.updateUptime();
 }
 
 void loop() {
-    // Core 0 handles network and SNMP
+    cliHandler.process();
     
     // Check network connection
     if (!udp.isConnected()) {
-        Serial.println("Network connection lost! Attempting to reconnect...");
+        serial.sendln("Network connection lost! Attempting to reconnect...");
         const DeviceSettings& deviceSettings = settings.getSettings();
         if (deviceSettings.dhcpEnabled) {
             udp.startDHCP();

@@ -1,8 +1,7 @@
 #pragma once
 
+#include <Arduino.h>
 #include "Settings.h"
-#include "hardware/gpio.h"
-#include "pico/stdlib.h"
 
 class FactoryResetHandler {
 public:

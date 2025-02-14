@@ -1,16 +1,11 @@
 #pragma once
 
-#include <cstdint>
-#include <cstddef>
-// Forward declarations for Pico SDK types
-extern "C" {
-    void flash_range_erase(uint32_t offset, size_t count);
-    void flash_range_program(uint32_t offset, const uint8_t *data, size_t count);
-}
+#include <Arduino.h>
+#include <hardware/flash.h>
 
 // Flash storage constants
-constexpr uint32_t SETTINGS_FLASH_OFFSET = 1024 * 1024; // 1MB offset from start of flash
-constexpr uint32_t SETTINGS_BLOCK_SIZE = 512;           // 512 bytes per block
+constexpr uint32_t SETTINGS_FLASH_OFFSET = PICO_FLASH_SIZE_BYTES - (1024 * 1024); // 1MB from end of flash
+constexpr uint32_t SETTINGS_BLOCK_SIZE = FLASH_SECTOR_SIZE;  // Use flash sector size
 constexpr uint32_t SETTINGS_NUM_BLOCKS = 8;             // 8 blocks for wear leveling
 constexpr uint32_t SETTINGS_MAGIC = 0x534E4D50;         // "SNMP" in ASCII
 constexpr uint32_t SETTINGS_VERSION = 1;                // Initial version

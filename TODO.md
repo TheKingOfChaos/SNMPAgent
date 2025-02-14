@@ -40,8 +40,8 @@
     - [ ] Add sysName
     - [ ] Add sysLocation
     - [ ] Add sysServices
-  - [ ] Add private group (.1.3.6.1.4.1.X)
-    - [ ] Add power monitoring OIDs
+  - [ ] Add private group (.1.3.6.1.4.1.63050)
+    - [ ] Add power monitoring OIDs (.1.3.6.1.4.1.63050.1)
     - [ ] Add configuration OIDs
     - [ ] Add statistics OIDs
   - [ ] Implement OID tree traversal for GetNext
@@ -71,23 +71,23 @@
   - [x] Add wear leveling algorithm (8-block rotation system)
   - [x] Implement data integrity validation (CRC32 + magic numbers)
   - [x] Create configuration structure (network, SNMP, and statistics)
-- [ ] Add factory reset functionality
-  - [ ] Set up GPIO22 for reset button
-  - [ ] Implement 10-second hold detection
-  - [ ] Add LED feedback system
-  - [ ] Create settings reset procedure
+- [x] Add factory reset functionality
+  - [x] Set up GPIO22 for reset button
+  - [x] Implement 10-second hold detection
+  - [x] Add LED feedback system
+  - [x] Create settings reset procedure
 
 ## 5. CLI Interface
-- [ ] Create serial communication system
-  - [ ] Set up UART (115200 baud)
-  - [ ] Implement command parser
-  - [ ] Add input sanitization
-- [ ] Implement menu system
-  - [ ] Add status display
-  - [ ] Create network configuration options
-  - [ ] Add SNMP configuration
-  - [ ] Implement statistics viewing
-  - [ ] Add configuration save option
+- [x] Create serial communication system
+  - [x] Set up UART (115200 baud)
+  - [x] Implement command parser
+  - [x] Add input sanitization
+- [x] Implement menu system
+  - [x] Add status display
+  - [x] Create network configuration options
+  - [x] Add SNMP configuration
+  - [x] Implement statistics viewing
+  - [x] Add configuration save option
 
 ## 6. Testing & Validation
 - [ ] Create hardware test suite
