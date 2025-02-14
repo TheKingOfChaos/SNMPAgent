@@ -34,19 +34,19 @@
   - [x] Unit tests for each type
 
 ### 2.2 SNMP Message Structure
-- [ ] Message Framework
-  - [ ] Define message structure classes
-  - [ ] Implement version handling (v1)
-  - [ ] Add community string support
-- [ ] PDU Components
-  - [ ] Request ID handling
-  - [ ] Error status/index
-  - [ ] Variable bindings
-- [ ] PDU Types
-  - [ ] GetRequest PDU
-  - [ ] GetNextRequest PDU
-  - [ ] GetResponse PDU
-  - [ ] Error Response PDU
+- [x] Message Framework
+  - [x] Define message structure classes
+  - [x] Implement version handling (v1)
+  - [x] Add community string support
+- [x] PDU Components
+  - [x] Request ID handling
+  - [x] Error status/index
+  - [x] Variable bindings
+- [x] PDU Types
+  - [x] GetRequest PDU
+  - [x] GetNextRequest PDU
+  - [x] GetResponse PDU
+  - [x] Error Response PDU
 
 ### 2.3 MIB Implementation
 - [ ] Core MIB Infrastructure
