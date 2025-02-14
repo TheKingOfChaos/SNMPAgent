@@ -5,6 +5,18 @@
 
 namespace ASN1 {
 
+// ASN.1 Type Tags (Universal)
+constexpr uint8_t INTEGER_TAG = 0x02;
+constexpr uint8_t OCTET_STRING_TAG = 0x04;
+constexpr uint8_t NULL_TAG = 0x05;
+constexpr uint8_t OBJECT_IDENTIFIER_TAG = 0x06;
+constexpr uint8_t SEQUENCE_TAG = 0x30;
+
+// SNMP Application-specific Tags
+constexpr uint8_t COUNTER_TAG = 0x41;  // [APPLICATION 1]
+constexpr uint8_t GAUGE_TAG = 0x42;    // [APPLICATION 2]
+constexpr uint8_t TIMETICKS_TAG = 0x43; // [APPLICATION 3]
+
 // ASN.1 Tag Classes
 enum class TagClass : uint8_t {
     Universal       = 0b00000000,

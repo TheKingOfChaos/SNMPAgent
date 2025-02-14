@@ -1,4 +1,5 @@
 #include "SNMPMessage.h"
+#include "MIB.h"
 #include <string.h>
 
 namespace SNMP {
@@ -47,11 +48,56 @@ bool VarBind::decode(const uint8_t* buffer, size_t size, size_t& bytesRead) {
     if (!oid.decode(buffer + bytesRead, size - bytesRead, oidBytes)) return false;
     bytesRead += oidBytes;
     
-    // TODO: Implement value decoding based on type tag
-    // For now, just skip the value part
-    ASN1::Null nullValue;
+    // Decode value based on type tag
+    if (bytesRead >= size) return false;
+    
+    uint8_t typeTag = buffer[bytesRead];
     size_t valueBytes;
-    if (!nullValue.decode(buffer + bytesRead, size - bytesRead, valueBytes)) return false;
+    
+    switch (typeTag) {
+        case ASN1::INTEGER_TAG:
+        case ASN1::COUNTER_TAG:
+        case ASN1::GAUGE_TAG:
+        case ASN1::TIMETICKS_TAG: {
+            auto intValue = new ASN1::Integer();
+            if (!intValue->decode(buffer + bytesRead, size - bytesRead, valueBytes)) {
+                delete intValue;
+                return false;
+            }
+            value = intValue;
+            break;
+        }
+        case ASN1::OCTET_STRING_TAG: {
+            auto strValue = new ASN1::OctetString();
+            if (!strValue->decode(buffer + bytesRead, size - bytesRead, valueBytes)) {
+                delete strValue;
+                return false;
+            }
+            value = strValue;
+            break;
+        }
+        case ASN1::OBJECT_IDENTIFIER_TAG: {
+            auto oidValue = new ASN1::ObjectIdentifier();
+            if (!oidValue->decode(buffer + bytesRead, size - bytesRead, valueBytes)) {
+                delete oidValue;
+                return false;
+            }
+            value = oidValue;
+            break;
+        }
+        case ASN1::NULL_TAG: {
+            auto nullValue = new ASN1::Null();
+            if (!nullValue->decode(buffer + bytesRead, size - bytesRead, valueBytes)) {
+                delete nullValue;
+                return false;
+            }
+            value = nullValue;
+            break;
+        }
+        default:
+            return false;
+    }
+    
     bytesRead += valueBytes;
     
     return true;
@@ -157,11 +203,22 @@ bool PDU::decode(const uint8_t* buffer, size_t size, size_t& bytesRead) {
     size_t varBindSeqBytes;
     if (!varBindSeq.decode(curr, remaining, varBindSeqBytes)) return false;
     
-    // TODO: Implement varbind decoding
-    // For now, just skip varbinds
+    // Process each varbind in the sequence
+    curr += varBindSeqBytes;
+    remaining -= varBindSeqBytes;
     varBindCount = 0;
     
-    bytesRead = size - remaining + varBindSeqBytes;
+    while (remaining > 0 && varBindCount < 16) {
+        VarBind vb;
+        size_t vbBytes;
+        if (!vb.decode(curr, remaining, vbBytes)) break;
+        
+        varBinds[varBindCount++] = vb;
+        curr += vbBytes;
+        remaining -= vbBytes;
+    }
+    
+    bytesRead = size - remaining;
     return true;
 }
 
@@ -288,6 +345,30 @@ Message Message::createErrorResponse(const Message& request, ErrorStatus status,
     }
     
     return msg;
+}
+
+// Initialize static rate limiting members
+uint32_t Message::requestTimes[MAX_REQUESTS_PER_WINDOW] = {0};
+uint8_t Message::requestTimeIndex = 0;
+
+bool Message::checkRateLimit() {
+    uint32_t currentTime = millis();
+    uint32_t windowStart = currentTime - RATE_LIMIT_WINDOW_MS;
+    
+    // Count requests within the window
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < MAX_REQUESTS_PER_WINDOW; i++) {
+        if (requestTimes[i] > windowStart) {
+            count++;
+        }
+    }
+    
+    return count < MAX_REQUESTS_PER_WINDOW;
+}
+
+void Message::updateRateLimit() {
+    requestTimes[requestTimeIndex] = millis();
+    requestTimeIndex = (requestTimeIndex + 1) % MAX_REQUESTS_PER_WINDOW;
 }
 
 } // namespace SNMP

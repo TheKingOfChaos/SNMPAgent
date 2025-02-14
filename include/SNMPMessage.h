@@ -4,6 +4,9 @@
 #include "ASN1Types.h"
 #include <Arduino.h>
 
+// Forward declare global MIB class
+class MIB;
+
 namespace SNMP {
 
 // SNMP Version (v1 only as per requirements)
@@ -80,12 +83,29 @@ public:
     static Message createGetResponse(const Message& request, const VarBind& response);
     static Message createErrorResponse(const Message& request, ErrorStatus status, int32_t index = 0);
     
+    // Request processing (implemented in SNMPMessageMIB.cpp)
+    bool processRequest(const ::MIB& mib, Message& response);
+    
+private:
+    bool processGetRequest(const ::MIB& mib, Message& response);
+    bool processGetNextRequest(const ::MIB& mib, Message& response);
+    
+    // Rate limiting
+    bool checkRateLimit();
+    void updateRateLimit();
+    
     // Message components
     ASN1::Integer version;         // SNMP version (always 0 for v1)
     ASN1::OctetString community;   // Community string
     PDU pdu;                      // Protocol Data Unit
     
-private:
+    // Rate limiting configuration
+    static constexpr uint32_t RATE_LIMIT_WINDOW_MS = 1000;  // 1 second window
+    static constexpr uint8_t MAX_REQUESTS_PER_WINDOW = 10;  // Max 10 requests per second
+    static uint32_t requestTimes[MAX_REQUESTS_PER_WINDOW];
+    static uint8_t requestTimeIndex;
+    
+    // Request ID counter
     static int32_t nextRequestID;  // Counter for generating request IDs
 };
 
