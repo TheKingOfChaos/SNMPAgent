@@ -1,5 +1,21 @@
 # SNMP Pico Power Monitor Project Rules
 
+## Hardware Platform Requirements
+
+1. Microcontroller
+   - Must use Raspberry Pi Pico (RP2040)
+   - Must operate at default 125MHz clock speed
+   - Must utilize both cores:
+     * Core 0: Network and SNMP handling
+     * Core 1: Power monitoring and GPIO management
+   - Must use onboard LED for status indication
+
+2. Memory Utilization
+   - Must fit within 2MB of flash memory
+   - Must operate within 264KB of RAM
+   - Must implement efficient dual-core synchronization
+   - Must use appropriate memory barriers for core communication
+
 ## Core Requirements
 
 1. SNMP Implementation
