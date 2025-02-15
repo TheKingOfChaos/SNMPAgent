@@ -1,230 +1,296 @@
 #include "MIB.h"
-#include "ASN1Types.h"
-#include "ASN1Object.h"
-#include <algorithm>
-#include <sstream>
+#include "ErrorHandler.h"
+#include <string.h>
+#include <stdlib.h>
 
-// MIBNode implementation
-MIBNode::MIBNode(const std::string& name, uint32_t id, NodeType type, AccessType access)
-    : name_(name), id_(id), type_(type), access_(access), staticValue_(nullptr) {}
+MIB::MIB() : node_count_(0) {
+}
 
-void MIBNode::addChild(MIBNodePtr child) {
-    children_.push_back(child);
-    child->parent_ = std::weak_ptr<MIBNode>(shared_from_this());
+bool MIB::registerNode(const char* oid, NodeType type, Access access,
+                      GetterFunction getter, SetterFunction setter) {
+    if (!isValidOID(oid) || node_count_ >= MAX_NODES) {
+        REPORT_ERROR(ErrorHandler::Severity::WARNING,
+                    ErrorHandler::Category::PROTOCOL,
+                    0x6001,
+                    "Invalid OID format or MIB full");
+        return false;
+    }
     
-    // Sort children by ID for proper GetNext operation
-    std::sort(children_.begin(), children_.end(),
-              [](const MIBNodePtr& a, const MIBNodePtr& b) {
-                  return a->getID() < b->getID();
-              });
+    Node node;
+    node.type = type;
+    node.access = access;
+    node.getter = getter;
+    node.setter = setter;
+    strncpy(node.oid, oid, sizeof(node.oid) - 1);
+    node.oid[sizeof(node.oid) - 1] = '\0';
+    
+    return addNode(node);
 }
 
-void MIBNode::setValue(ASN1Object* value) {
-    if (staticValue_) {
-        delete staticValue_;
+bool MIB::getValue(const char* oid, ASN1Object& value) const {
+    const Node* node = findNode(oid);
+    if (!node || node->access == Access::NOT_ACCESSIBLE || !node->getter) {
+        return false;
     }
-    staticValue_ = value;
-    valueCallback_ = nullptr; // Clear any existing callback
+    
+    value = node->getter();
+    return true;
 }
 
-void MIBNode::setCallback(ValueCallback callback) {
-    valueCallback_ = callback;
-    if (staticValue_) {
-        delete staticValue_;
-        staticValue_ = nullptr;
+bool MIB::setValue(const char* oid, const ASN1Object& value) {
+    Node* node = findNode(oid);
+    if (!node || node->access != Access::READ_WRITE || !node->setter) {
+        return false;
     }
+    
+    return node->setter(value);
 }
 
-ASN1Object* MIBNode::getValue() const {
-    if (valueCallback_) {
-        return valueCallback_();
+bool MIB::getNextOID(const char* oid, char* nextOid, size_t maxLength) const {
+    if (!oid || !nextOid || maxLength == 0) {
+        return false;
     }
-    return staticValue_;
+    
+    // Handle empty OID
+    if (oid[0] == '\0') {
+        if (node_count_ > 0) {
+            strncpy(nextOid, nodes_[0].oid, maxLength - 1);
+            nextOid[maxLength - 1] = '\0';
+            return true;
+        }
+        return false;
+    }
+    
+    // Find next OID in lexicographical order
+    for (size_t i = 0; i < node_count_; i++) {
+        if (compareOID(oid, nodes_[i].oid) < 0) {
+            strncpy(nextOid, nodes_[i].oid, maxLength - 1);
+            nextOid[maxLength - 1] = '\0';
+            return true;
+        }
+    }
+    
+    return false;
 }
 
-MIBNodePtr MIBNode::getChild(uint32_t id) const {
-    auto it = std::find_if(children_.begin(), children_.end(),
-                          [id](const MIBNodePtr& child) {
-                              return child->getID() == id;
-                          });
-    return (it != children_.end()) ? *it : nullptr;
+bool MIB::isValidOID(const char* oid) const {
+    if (!oid || oid[0] == '\0') {
+        return false;
+    }
+    
+    const char* ptr = oid;
+    bool first = true;
+    
+    while (*ptr) {
+        // Skip dots
+        if (*ptr == '.') {
+            ptr++;
+            continue;
+        }
+        
+        // Parse number
+        char* end;
+        long num = strtol(ptr, &end, 10);
+        if (end == ptr || num < 0) {
+            return false;
+        }
+        
+        // First number must be 0-2
+        if (first && num > 2) {
+            return false;
+        }
+        first = false;
+        
+        ptr = end;
+    }
+    
+    return true;
 }
 
-MIBNodePtr MIBNode::getNextSibling() const {
-    if (auto parent = parent_.lock()) {
-        auto& siblings = parent->children_;
-        auto it = std::find_if(siblings.begin(), siblings.end(),
-                              [this](const MIBNodePtr& node) {
-                                  return node.get() == this;
-                              });
-        if (it != siblings.end() && ++it != siblings.end()) {
-            return *it;
+void MIB::initialize() {
+    initializeSystemGroup();
+}
+
+void MIB::initializeSystemGroup() {
+    // System group (.1.3.6.1.2.1.1)
+    const char* systemPrefix = "1.3.6.1.2.1.1";
+    char oidBuffer[MAX_OID_STRING_LENGTH];
+    
+    // sysDescr (.1.3.6.1.2.1.1.1)
+    snprintf(oidBuffer, sizeof(oidBuffer), "%s.1", systemPrefix);
+    registerNode(oidBuffer, NodeType::STRING, Access::READ_ONLY,
+        []() {
+            ASN1Object value(ASN1Object::Type::OCTET_STRING);
+            value.setString("SNMP Power Monitor v1.0", strlen("SNMP Power Monitor v1.0"));
+            return value;
+        });
+    
+    // sysObjectID (.1.3.6.1.2.1.1.2)
+    snprintf(oidBuffer, sizeof(oidBuffer), "%s.2", systemPrefix);
+    registerNode(oidBuffer, NodeType::OID, Access::READ_ONLY,
+        []() {
+            ASN1Object value(ASN1Object::Type::OBJECT_IDENTIFIER);
+            uint32_t enterpriseOid[] = {1, 3, 6, 1, 4, 1, 63050, 1};
+            value.setOID(enterpriseOid, 8);
+            return value;
+        });
+    
+    // sysUpTime (.1.3.6.1.2.1.1.3)
+    snprintf(oidBuffer, sizeof(oidBuffer), "%s.3", systemPrefix);
+    registerNode(oidBuffer, NodeType::INTEGER, Access::READ_ONLY,
+        []() {
+            ASN1Object value(ASN1Object::Type::INTEGER);
+            value.setInteger(millis() / 10); // Convert to hundredths of a second
+            return value;
+        });
+    
+    // sysContact (.1.3.6.1.2.1.1.4)
+    snprintf(oidBuffer, sizeof(oidBuffer), "%s.4", systemPrefix);
+    registerNode(oidBuffer, NodeType::STRING, Access::READ_WRITE,
+        []() {
+            ASN1Object value(ASN1Object::Type::OCTET_STRING);
+            value.setString("admin@example.com", strlen("admin@example.com"));
+            return value;
+        },
+        [](const ASN1Object& value) {
+            // TODO: Store contact in settings
+            return true;
+        });
+    
+    // sysName (.1.3.6.1.2.1.1.5)
+    snprintf(oidBuffer, sizeof(oidBuffer), "%s.5", systemPrefix);
+    registerNode(oidBuffer, NodeType::STRING, Access::READ_WRITE,
+        []() {
+            ASN1Object value(ASN1Object::Type::OCTET_STRING);
+            value.setString("PowerMonitor", strlen("PowerMonitor"));
+            return value;
+        },
+        [](const ASN1Object& value) {
+            // TODO: Store name in settings
+            return true;
+        });
+    
+    // sysLocation (.1.3.6.1.2.1.1.6)
+    snprintf(oidBuffer, sizeof(oidBuffer), "%s.6", systemPrefix);
+    registerNode(oidBuffer, NodeType::STRING, Access::READ_WRITE,
+        []() {
+            ASN1Object value(ASN1Object::Type::OCTET_STRING);
+            value.setString("Server Room", strlen("Server Room"));
+            return value;
+        },
+        [](const ASN1Object& value) {
+            // TODO: Store location in settings
+            return true;
+        });
+}
+
+int MIB::compareOID(const char* oid1, const char* oid2) {
+    const char *p1 = oid1, *p2 = oid2;
+    
+    while (*p1 && *p2) {
+        // Skip dots
+        while (*p1 == '.') p1++;
+        while (*p2 == '.') p2++;
+        
+        if (!*p1 || !*p2) break;
+        
+        // Compare numbers
+        char* end1;
+        char* end2;
+        long num1 = strtol(p1, &end1, 10);
+        long num2 = strtol(p2, &end2, 10);
+        
+        if (num1 != num2) {
+            return num1 - num2;
+        }
+        
+        p1 = end1;
+        p2 = end2;
+    }
+    
+    // Handle case where one OID is prefix of the other
+    if (*p1) return 1;
+    if (*p2) return -1;
+    return 0;
+}
+
+bool MIB::getParentOID(const char* oid, char* parent, size_t maxLength) {
+    if (!oid || !parent || maxLength == 0) {
+        return false;
+    }
+    
+    const char* lastDot = strrchr(oid, '.');
+    if (!lastDot) {
+        return false;
+    }
+    
+    size_t length = lastDot - oid;
+    if (length >= maxLength) {
+        return false;
+    }
+    
+    strncpy(parent, oid, length);
+    parent[length] = '\0';
+    return true;
+}
+
+bool MIB::isChildOID(const char* parent, const char* child) {
+    if (!parent || !child) {
+        return false;
+    }
+    
+    size_t parentLen = strlen(parent);
+    if (strlen(child) <= parentLen) {
+        return false;
+    }
+    
+    return strncmp(parent, child, parentLen) == 0 && child[parentLen] == '.';
+}
+
+const MIB::Node* MIB::findNode(const char* oid) const {
+    for (size_t i = 0; i < node_count_; i++) {
+        if (strcmp(nodes_[i].oid, oid) == 0) {
+            return &nodes_[i];
         }
     }
     return nullptr;
 }
 
-MIBNodePtr MIBNode::getParent() const {
-    return parent_.lock();
+MIB::Node* MIB::findNode(const char* oid) {
+    return const_cast<Node*>(const_cast<const MIB*>(this)->findNode(oid));
 }
 
-std::vector<uint32_t> MIBNode::getOID() const {
-    std::vector<uint32_t> oid;
-    const MIBNode* node = this;
+bool MIB::addNode(const Node& node) {
+    if (node_count_ >= MAX_NODES) {
+        return false;
+    }
     
-    while (node) {
-        oid.insert(oid.begin(), node->id_);
-        if (auto parent = node->parent_.lock()) {
-            node = parent.get();
-        } else {
-            break;
+    // Find insertion point to maintain sorted order
+    size_t pos = 0;
+    while (pos < node_count_ && compareOID(nodes_[pos].oid, node.oid) < 0) {
+        pos++;
+    }
+    
+    // Shift existing nodes
+    if (pos < node_count_) {
+        memmove(&nodes_[pos + 1], &nodes_[pos], (node_count_ - pos) * sizeof(Node));
+    }
+    
+    // Insert new node
+    nodes_[pos] = node;
+    node_count_++;
+    return true;
+}
+
+void MIB::sortNodes() {
+    // Simple bubble sort since we don't expect too many nodes
+    for (size_t i = 0; i < node_count_ - 1; i++) {
+        for (size_t j = 0; j < node_count_ - i - 1; j++) {
+            if (compareOID(nodes_[j].oid, nodes_[j + 1].oid) > 0) {
+                Node temp = nodes_[j];
+                nodes_[j] = nodes_[j + 1];
+                nodes_[j + 1] = temp;
+            }
         }
     }
-    
-    return oid;
-}
-
-bool MIBNode::matchOID(const std::vector<uint32_t>& oid) const {
-    return getOID() == oid;
-}
-
-// MIB implementation
-MIB::MIB() {
-    // Create root node
-    root_ = std::make_shared<MIBNode>("root", 1, NodeType::CONTAINER, AccessType::NOT_ACCESSIBLE);
-}
-
-void MIB::initialize() {
-    createStandardOIDStructure();
-    createSystemGroup();
-    createPrivateGroup();
-}
-
-void MIB::addNode(const std::vector<uint32_t>& oid, const std::string& name,
-                     NodeType type, AccessType access) {
-    if (oid.empty()) return;
-    
-    MIBNodePtr current = root_;
-    for (size_t i = 0; i < oid.size() - 1; ++i) {
-        auto child = current->getChild(oid[i]);
-        if (!child) {
-            // Create intermediate nodes as containers
-            child = std::make_shared<MIBNode>("", oid[i], NodeType::CONTAINER, AccessType::NOT_ACCESSIBLE);
-            current->addChild(child);
-        }
-        current = child;
-    }
-    
-    // Create the final node with the specified properties
-    auto finalNode = std::make_shared<MIBNode>(name, oid.back(), type, access);
-    current->addChild(finalNode);
-}
-
-void MIB::setValue(const std::vector<uint32_t>& oid, ASN1Object* value) {
-    auto node = findNode(oid);
-    if (node) {
-        node->setValue(value);
-    }
-}
-
-void MIB::setCallback(const std::vector<uint32_t>& oid, ValueCallback callback) {
-    auto node = findNode(oid);
-    if (node) {
-        node->setCallback(callback);
-    }
-}
-
-ASN1Object* MIB::getValue(const std::vector<uint32_t>& oid) const {
-    auto node = findNode(oid);
-    return node ? node->getValue() : nullptr;
-}
-
-std::vector<uint32_t> MIB::getNextOID(const std::vector<uint32_t>& oid) const {
-    // Special case for empty OID - return first node
-    if (oid.empty() && !root_->children_.empty()) {
-        return root_->children_[0]->getOID();
-    }
-    
-    auto node = findNode(oid);
-    if (!node) return std::vector<uint32_t>();
-    
-    // First try children
-    if (!node->children_.empty()) {
-        return node->children_[0]->getOID();
-    }
-    
-    // Then try siblings
-    while (node) {
-        if (auto next = node->getNextSibling()) {
-            return next->getOID();
-        }
-        node = node->getParent();
-    }
-    
-    return std::vector<uint32_t>();
-}
-
-MIBNodePtr MIB::findNode(const std::vector<uint32_t>& oid) const {
-    MIBNodePtr current = root_;
-    
-    for (uint32_t id : oid) {
-        current = current->getChild(id);
-        if (!current) break;
-    }
-    
-    return current;
-}
-
-void MIB::createStandardOIDStructure() {
-    // Create standard OID structure: iso(1).org(3).dod(6).internet(1)
-    std::vector<std::pair<uint32_t, std::string>> standardPath = {
-        {1, "iso"},
-        {3, "org"},
-        {6, "dod"},
-        {1, "internet"},
-        {2, "mgmt"},
-        {1, "mib-2"}
-    };
-    
-    MIBNodePtr current = root_;
-    std::vector<uint32_t> path;
-    
-    for (const auto& pair : standardPath) {
-        path.push_back(pair.first);
-        auto node = std::make_shared<MIBNode>(pair.second, pair.first, NodeType::CONTAINER, AccessType::NOT_ACCESSIBLE);
-        current->addChild(node);
-        current = node;
-    }
-}
-
-void MIB::createSystemGroup() {
-    // System group base: .1.3.6.1.2.1.1
-    std::vector<uint32_t> sysBase = {1, 3, 6, 1, 2, 1, 1};
-    
-    // Add system group nodes
-    addNode({1, 3, 6, 1, 2, 1, 1, 1}, "sysDescr", NodeType::SCALAR, AccessType::READ_ONLY);
-    addNode({1, 3, 6, 1, 2, 1, 1, 2}, "sysObjectID", NodeType::SCALAR, AccessType::READ_ONLY);
-    addNode({1, 3, 6, 1, 2, 1, 1, 3}, "sysUpTime", NodeType::SCALAR, AccessType::READ_ONLY);
-    addNode({1, 3, 6, 1, 2, 1, 1, 4}, "sysContact", NodeType::SCALAR, AccessType::READ_WRITE);
-    addNode({1, 3, 6, 1, 2, 1, 1, 5}, "sysName", NodeType::SCALAR, AccessType::READ_WRITE);
-    addNode({1, 3, 6, 1, 2, 1, 1, 6}, "sysLocation", NodeType::SCALAR, AccessType::READ_WRITE);
-}
-
-void MIB::createPrivateGroup() {
-    // Private enterprise base: .1.3.6.1.4.1.63050 (using example enterprise number 63050)
-    std::vector<uint32_t> privateBase = {1, 3, 6, 1, 4, 1, 63050};
-    
-    // Add power monitoring nodes
-    addNode({1, 3, 6, 1, 4, 1, 63050, 1, 1}, "powerStatus", NodeType::SCALAR, AccessType::READ_ONLY);
-    addNode({1, 3, 6, 1, 4, 1, 63050, 1, 2}, "lastPowerFailure", NodeType::SCALAR, AccessType::READ_ONLY);
-    addNode({1, 3, 6, 1, 4, 1, 63050, 1, 3}, "powerFailureCount", NodeType::SCALAR, AccessType::READ_ONLY);
-    
-    // Add configuration nodes
-    addNode({1, 3, 6, 1, 4, 1, 63050, 2, 1}, "ipConfig", NodeType::SCALAR, AccessType::READ_WRITE);
-    addNode({1, 3, 6, 1, 4, 1, 63050, 2, 2}, "communityString", NodeType::SCALAR, AccessType::READ_WRITE);
-    
-    // Add statistics nodes
-    addNode({1, 3, 6, 1, 4, 1, 63050, 3, 1}, "totalRequests", NodeType::SCALAR, AccessType::READ_ONLY);
-    addNode({1, 3, 6, 1, 4, 1, 63050, 3, 2}, "totalResponses", NodeType::SCALAR, AccessType::READ_ONLY);
-    addNode({1, 3, 6, 1, 4, 1, 63050, 3, 3}, "errorCount", NodeType::SCALAR, AccessType::READ_ONLY);
 }

@@ -89,7 +89,8 @@ bool Integer::decode(const uint8_t* buffer, size_t size, size_t& bytesRead) {
     // Decode value
     value = 0;
     const uint8_t* valueStart = buffer + 1 + lengthBytes;
-    bool isNegative = (valueStart[0] & 0x80) != 0;
+    // Check sign bit but don't store it since we're not using it yet
+    (void)(valueStart[0] & 0x80);
     
     for (size_t i = 0; i < length; i++) {
         value = (value << 8) | valueStart[i];

@@ -1,374 +1,315 @@
 #include "SNMPMessage.h"
-#include "MIB.h"
+#include "ASN1Object.h"
+#include "ErrorHandler.h"
 #include <string.h>
+#include <stdio.h>
 
-namespace SNMP {
-
-// Initialize static request ID counter
-int32_t Message::nextRequestID = 1;
-
-// VarBind implementation
-VarBind::VarBind(const ASN1::ObjectIdentifier& oid, ASN1::Type* value)
-    : oid(oid), value(value) {}
-
-size_t VarBind::encode(uint8_t* buffer, size_t size) const {
-    // Create sequence for OID and value
-    ASN1::Sequence seq;
-    
-    // Encode OID
-    uint8_t oidBuffer[64];
-    size_t oidSize = oid.encode(oidBuffer, sizeof(oidBuffer));
-    if (oidSize == 0) return 0;
-    if (!seq.addData(oidBuffer, oidSize)) return 0;
-    
-    // Encode value (or NULL if no value provided)
-    if (value) {
-        uint8_t valueBuffer[256];
-        size_t valueSize = value->encode(valueBuffer, sizeof(valueBuffer));
-        if (valueSize == 0) return 0;
-        if (!seq.addData(valueBuffer, valueSize)) return 0;
-    } else {
-        ASN1::Null nullValue;
-        uint8_t nullBuffer[2];
-        size_t nullSize = nullValue.encode(nullBuffer, sizeof(nullBuffer));
-        if (nullSize == 0) return 0;
-        if (!seq.addData(nullBuffer, nullSize)) return 0;
-    }
-    
-    // Encode final sequence
-    return seq.encode(buffer, size);
-}
-
-bool VarBind::decode(const uint8_t* buffer, size_t size, size_t& bytesRead) {
-    ASN1::Sequence seq;
-    if (!seq.decode(buffer, size, bytesRead)) return false;
-    
-    // Decode OID
-    size_t oidBytes;
-    if (!oid.decode(buffer + bytesRead, size - bytesRead, oidBytes)) return false;
-    bytesRead += oidBytes;
-    
-    // Decode value based on type tag
-    if (bytesRead >= size) return false;
-    
-    uint8_t typeTag = buffer[bytesRead];
-    size_t valueBytes;
-    
-    switch (typeTag) {
-        case ASN1::INTEGER_TAG:
-        case ASN1::COUNTER_TAG:
-        case ASN1::GAUGE_TAG:
-        case ASN1::TIMETICKS_TAG: {
-            auto intValue = new ASN1::Integer();
-            if (!intValue->decode(buffer + bytesRead, size - bytesRead, valueBytes)) {
-                delete intValue;
-                return false;
-            }
-            value = intValue;
-            break;
-        }
-        case ASN1::OCTET_STRING_TAG: {
-            auto strValue = new ASN1::OctetString();
-            if (!strValue->decode(buffer + bytesRead, size - bytesRead, valueBytes)) {
-                delete strValue;
-                return false;
-            }
-            value = strValue;
-            break;
-        }
-        case ASN1::OBJECT_IDENTIFIER_TAG: {
-            auto oidValue = new ASN1::ObjectIdentifier();
-            if (!oidValue->decode(buffer + bytesRead, size - bytesRead, valueBytes)) {
-                delete oidValue;
-                return false;
-            }
-            value = oidValue;
-            break;
-        }
-        case ASN1::NULL_TAG: {
-            auto nullValue = new ASN1::Null();
-            if (!nullValue->decode(buffer + bytesRead, size - bytesRead, valueBytes)) {
-                delete nullValue;
-                return false;
-            }
-            value = nullValue;
-            break;
-        }
-        default:
-            return false;
-    }
-    
-    bytesRead += valueBytes;
-    
-    return true;
-}
-
-// PDU implementation
-PDU::PDU(PDUType type)
-    : type(type), requestID(0), errorStatus(ErrorStatus::NoError), 
-      errorIndex(0), varBindCount(0) {}
-
-size_t PDU::encode(uint8_t* buffer, size_t size) const {
-    // Create sequence for PDU contents
-    ASN1::Sequence seq;
-    
-    // Encode request ID
-    ASN1::Integer reqID(requestID);
-    uint8_t reqIDBuffer[8];
-    size_t reqIDSize = reqID.encode(reqIDBuffer, sizeof(reqIDBuffer));
-    if (reqIDSize == 0) return 0;
-    if (!seq.addData(reqIDBuffer, reqIDSize)) return 0;
-    
-    // Encode error status
-    ASN1::Integer errStatus(static_cast<int32_t>(errorStatus));
-    uint8_t errStatusBuffer[8];
-    size_t errStatusSize = errStatus.encode(errStatusBuffer, sizeof(errStatusBuffer));
-    if (errStatusSize == 0) return 0;
-    if (!seq.addData(errStatusBuffer, errStatusSize)) return 0;
-    
-    // Encode error index
-    ASN1::Integer errIdx(errorIndex);
-    uint8_t errIdxBuffer[8];
-    size_t errIdxSize = errIdx.encode(errIdxBuffer, sizeof(errIdxBuffer));
-    if (errIdxSize == 0) return 0;
-    if (!seq.addData(errIdxBuffer, errIdxSize)) return 0;
-    
-    // Create sequence for variable bindings
-    ASN1::Sequence varBindSeq;
-    for (uint8_t i = 0; i < varBindCount; i++) {
-        uint8_t varBindBuffer[512];
-        size_t varBindSize = varBinds[i].encode(varBindBuffer, sizeof(varBindBuffer));
-        if (varBindSize == 0) return 0;
-        if (!varBindSeq.addData(varBindBuffer, varBindSize)) return 0;
-    }
-    
-    // Add varbind sequence to main sequence
-    uint8_t varBindSeqBuffer[1024];
-    size_t varBindSeqSize = varBindSeq.encode(varBindSeqBuffer, sizeof(varBindSeqBuffer));
-    if (varBindSeqSize == 0) return 0;
-    if (!seq.addData(varBindSeqBuffer, varBindSeqSize)) return 0;
-    
-    // Encode final PDU with correct tag
-    buffer[0] = static_cast<uint8_t>(type);
-    uint8_t seqBuffer[2048];
-    size_t seqSize = seq.encode(seqBuffer + 1, sizeof(seqBuffer) - 1);
-    if (seqSize == 0) return 0;
-    
-    memcpy(buffer + 1, seqBuffer + 1, seqSize - 1);
-    return seqSize;
-}
-
-bool PDU::decode(const uint8_t* buffer, size_t size, size_t& bytesRead) {
-    if (size < 2) return false;
-    
-    // Validate PDU type
-    type = static_cast<PDUType>(buffer[0]);
-    if (type != PDUType::GetRequest && type != PDUType::GetNextRequest &&
-        type != PDUType::GetResponse) {
+bool SNMPMessage::numericToStringOID(const uint32_t* numericOID, size_t length, char* stringOID, size_t maxLength) {
+    if (!numericOID || !stringOID || !length || !maxLength) {
         return false;
     }
     
-    ASN1::Sequence seq;
-    if (!seq.decode(buffer, size, bytesRead)) return false;
+    size_t offset = 0;
+    offset += snprintf(stringOID + offset, maxLength - offset, "%lu", (unsigned long)numericOID[0]);
     
-    const uint8_t* curr = buffer + bytesRead;
-    size_t remaining = size - bytesRead;
-    
-    // Decode request ID
-    ASN1::Integer reqID;
-    size_t reqIDBytes;
-    if (!reqID.decode(curr, remaining, reqIDBytes)) return false;
-    requestID = reqID.getValue();
-    curr += reqIDBytes;
-    remaining -= reqIDBytes;
-    
-    // Decode error status
-    ASN1::Integer errStatus;
-    size_t errStatusBytes;
-    if (!errStatus.decode(curr, remaining, errStatusBytes)) return false;
-    errorStatus = static_cast<ErrorStatus>(errStatus.getValue());
-    curr += errStatusBytes;
-    remaining -= errStatusBytes;
-    
-    // Decode error index
-    ASN1::Integer errIdx;
-    size_t errIdxBytes;
-    if (!errIdx.decode(curr, remaining, errIdxBytes)) return false;
-    errorIndex = errIdx.getValue();
-    curr += errIdxBytes;
-    remaining -= errIdxBytes;
-    
-    // Decode variable bindings sequence
-    ASN1::Sequence varBindSeq;
-    size_t varBindSeqBytes;
-    if (!varBindSeq.decode(curr, remaining, varBindSeqBytes)) return false;
-    
-    // Process each varbind in the sequence
-    curr += varBindSeqBytes;
-    remaining -= varBindSeqBytes;
-    varBindCount = 0;
-    
-    while (remaining > 0 && varBindCount < 16) {
-        VarBind vb;
-        size_t vbBytes;
-        if (!vb.decode(curr, remaining, vbBytes)) break;
-        
-        varBinds[varBindCount++] = vb;
-        curr += vbBytes;
-        remaining -= vbBytes;
+    for (size_t i = 1; i < length && offset < maxLength; i++) {
+        offset += snprintf(stringOID + offset, maxLength - offset, ".%lu", (unsigned long)numericOID[i]);
     }
     
-    bytesRead = size - remaining;
+    return offset < maxLength;
+}
+
+bool SNMPMessage::stringToNumericOID(const char* stringOID, uint32_t* numericOID, size_t* length, size_t maxLength) {
+    if (!stringOID || !numericOID || !length || !maxLength) {
+        return false;
+    }
+    
+    *length = 0;
+    const char* ptr = stringOID;
+    
+    while (*ptr && *length < maxLength) {
+        // Skip dots
+        if (*ptr == '.') {
+            ptr++;
+            continue;
+        }
+        
+        // Parse number
+        char* end;
+        unsigned long num = strtoul(ptr, &end, 10);
+        if (end == ptr) {
+            return false;
+        }
+        
+        numericOID[(*length)++] = num;
+        ptr = end;
+    }
+    
     return true;
 }
 
-bool PDU::addVarBind(const VarBind& varBind) {
-    if (varBindCount >= 16) return false;
-    varBinds[varBindCount++] = varBind;
+SNMPMessage::SNMPMessage()
+    : version_(0)
+    , pduType_(PDUType::GET_REQUEST)
+    , requestID_(0)
+    , errorStatus_(0)
+    , errorIndex_(0)
+    , varBind_count_(0)
+{
+    community_[0] = '\0';
+}
+
+void SNMPMessage::setCommunity(const char* community) {
+    strncpy(community_, community, MAX_COMMUNITY_LENGTH - 1);
+    community_[MAX_COMMUNITY_LENGTH - 1] = '\0';
+}
+
+bool SNMPMessage::addVarBind(const char* oid, const ASN1Object& value) {
+    if (varBind_count_ >= MAX_VARBINDS) {
+        return false;
+    }
+    
+    strncpy(varBinds_[varBind_count_].oid, oid, MAX_OID_STRING_LENGTH - 1);
+    varBinds_[varBind_count_].oid[MAX_OID_STRING_LENGTH - 1] = '\0';
+    varBinds_[varBind_count_].value = value;
+    varBind_count_++;
+    
     return true;
 }
 
-void PDU::clear() {
-    requestID = 0;
-    errorStatus = ErrorStatus::NoError;
-    errorIndex = 0;
-    varBindCount = 0;
-}
-
-// Message implementation
-Message::Message() : version(SNMP_VERSION_1) {}
-
-size_t Message::encode(uint8_t* buffer, size_t size) const {
-    // Create sequence for entire message
-    ASN1::Sequence seq;
+bool SNMPMessage::decode(const uint8_t* buffer, uint16_t size) {
+    if (!buffer || size < 2) {
+        REPORT_ERROR(ErrorHandler::Severity::WARNING,
+                    ErrorHandler::Category::PROTOCOL,
+                    0x4002,
+                    "Invalid SNMP message buffer");
+        return false;
+    }
     
-    // Encode version
-    uint8_t versionBuffer[8];
-    size_t versionSize = version.encode(versionBuffer, sizeof(versionBuffer));
-    if (versionSize == 0) return 0;
-    if (!seq.addData(versionBuffer, versionSize)) return 0;
+    uint16_t offset = 0;
+    varBind_count_ = 0;
     
-    // Encode community string
-    uint8_t communityBuffer[256];
-    size_t communitySize = community.encode(communityBuffer, sizeof(communityBuffer));
-    if (communitySize == 0) return 0;
-    if (!seq.addData(communityBuffer, communitySize)) return 0;
-    
-    // Encode PDU
-    uint8_t pduBuffer[2048];
-    size_t pduSize = pdu.encode(pduBuffer, sizeof(pduBuffer));
-    if (pduSize == 0) return 0;
-    if (!seq.addData(pduBuffer, pduSize)) return 0;
-    
-    // Encode final message sequence
-    return seq.encode(buffer, size);
-}
-
-bool Message::decode(const uint8_t* buffer, size_t size) {
-    ASN1::Sequence seq;
-    size_t bytesRead;
-    if (!seq.decode(buffer, size, bytesRead)) return false;
-    
-    const uint8_t* curr = buffer + bytesRead;
-    size_t remaining = size - bytesRead;
+    // Decode SNMP message sequence
+    ASN1Object sequence;
+    if (!sequence.decode(buffer, size, offset)) {
+        REPORT_ERROR(ErrorHandler::Severity::WARNING,
+                    ErrorHandler::Category::PROTOCOL,
+                    0x4003,
+                    "Failed to decode SNMP sequence");
+        return false;
+    }
     
     // Decode version
-    size_t versionBytes;
-    if (!version.decode(curr, remaining, versionBytes)) return false;
-    if (version.getValue() != SNMP_VERSION_1) return false;
-    curr += versionBytes;
-    remaining -= versionBytes;
+    ASN1Object versionObj;
+    if (!versionObj.decode(buffer, size, offset)) {
+        REPORT_ERROR(ErrorHandler::Severity::WARNING,
+                    ErrorHandler::Category::PROTOCOL,
+                    0x4004,
+                    "Failed to decode SNMP version");
+        return false;
+    }
+    version_ = versionObj.getInteger();
     
     // Decode community string
-    size_t communityBytes;
-    if (!community.decode(curr, remaining, communityBytes)) return false;
-    curr += communityBytes;
-    remaining -= communityBytes;
+    ASN1Object communityObj;
+    if (!communityObj.decode(buffer, size, offset)) {
+        REPORT_ERROR(ErrorHandler::Severity::WARNING,
+                    ErrorHandler::Category::PROTOCOL,
+                    0x4005,
+                    "Failed to decode community string");
+        return false;
+    }
+    setCommunity(communityObj.getString());
     
     // Decode PDU
-    size_t pduBytes;
-    if (!pdu.decode(curr, remaining, pduBytes)) return false;
+    return decodePDU(buffer, size, offset);
+}
+
+bool SNMPMessage::decodePDU(const uint8_t* buffer, uint16_t size, uint16_t& offset) {
+    // Get PDU type
+    if (offset >= size) {
+        return false;
+    }
+    pduType_ = static_cast<PDUType>(buffer[offset]);
+    
+    // Decode PDU sequence
+    ASN1Object pduSequence;
+    if (!pduSequence.decode(buffer, size, offset)) {
+        return false;
+    }
+    
+    // Decode request ID
+    ASN1Object requestIDObj;
+    if (!requestIDObj.decode(buffer, size, offset)) {
+        return false;
+    }
+    requestID_ = requestIDObj.getInteger();
+    
+    // Decode error status
+    ASN1Object errorStatusObj;
+    if (!errorStatusObj.decode(buffer, size, offset)) {
+        return false;
+    }
+    errorStatus_ = errorStatusObj.getInteger();
+    
+    // Decode error index
+    ASN1Object errorIndexObj;
+    if (!errorIndexObj.decode(buffer, size, offset)) {
+        return false;
+    }
+    errorIndex_ = errorIndexObj.getInteger();
+    
+    // Decode variable bindings
+    return decodeVarBinds(buffer, size, offset);
+}
+
+bool SNMPMessage::decodeVarBinds(const uint8_t* buffer, uint16_t size, uint16_t& offset) {
+    // Decode varbind sequence
+    ASN1Object varbindSequence;
+    if (!varbindSequence.decode(buffer, size, offset)) {
+        return false;
+    }
+    
+    // Reset varbind count
+    varBind_count_ = 0;
+    
+    // Decode each varbind
+    while (offset < size && varBind_count_ < MAX_VARBINDS) {
+        // Decode varbind sequence
+        ASN1Object varbindObj;
+        if (!varbindObj.decode(buffer, size, offset)) {
+            break;
+        }
+        
+        // Decode OID
+        ASN1Object oidObj;
+        if (!oidObj.decode(buffer, size, offset)) {
+            return false;
+        }
+        
+        // Decode value
+        ASN1Object valueObj;
+        if (!valueObj.decode(buffer, size, offset)) {
+            return false;
+        }
+        
+        // Convert numeric OID to string and add to varbind list
+        if (!numericToStringOID(oidObj.getOID(), oidObj.getOIDLength(),
+                              varBinds_[varBind_count_].oid, MAX_OID_STRING_LENGTH)) {
+            return false;
+        }
+        
+        varBinds_[varBind_count_].value = valueObj;
+        varBind_count_++;
+    }
     
     return true;
 }
 
-bool Message::validateCommunity(const char* expectedCommunity) const {
-    return strcmp(community.getValue(), expectedCommunity) == 0;
-}
-
-Message Message::createGetRequest(const char* community, const ASN1::ObjectIdentifier& oid) {
-    Message msg;
-    msg.community.setValue(community);
-    msg.pdu.type = PDUType::GetRequest;
-    msg.pdu.requestID = nextRequestID++;
-    
-    VarBind vb(oid);
-    msg.pdu.addVarBind(vb);
-    
-    return msg;
-}
-
-Message Message::createGetNextRequest(const char* community, const ASN1::ObjectIdentifier& oid) {
-    Message msg;
-    msg.community.setValue(community);
-    msg.pdu.type = PDUType::GetNextRequest;
-    msg.pdu.requestID = nextRequestID++;
-    
-    VarBind vb(oid);
-    msg.pdu.addVarBind(vb);
-    
-    return msg;
-}
-
-Message Message::createGetResponse(const Message& request, const VarBind& response) {
-    Message msg;
-    msg.community = request.community;
-    msg.pdu.type = PDUType::GetResponse;
-    msg.pdu.requestID = request.pdu.requestID;
-    msg.pdu.addVarBind(response);
-    
-    return msg;
-}
-
-Message Message::createErrorResponse(const Message& request, ErrorStatus status, int32_t index) {
-    Message msg;
-    msg.community = request.community;
-    msg.pdu.type = PDUType::GetResponse;
-    msg.pdu.requestID = request.pdu.requestID;
-    msg.pdu.errorStatus = status;
-    msg.pdu.errorIndex = index;
-    
-    // Copy the original varbinds but with NULL values
-    for (uint8_t i = 0; i < request.pdu.varBindCount; i++) {
-        VarBind vb(request.pdu.varBinds[i].oid);
-        msg.pdu.addVarBind(vb);
+uint16_t SNMPMessage::encode(uint8_t* buffer, uint16_t maxSize) {
+    if (!buffer || maxSize < 2) {
+        return 0;
     }
     
-    return msg;
+    uint16_t offset = 0;
+    
+    // Start SNMP sequence
+    buffer[offset++] = 0x30; // Sequence tag
+    uint16_t lengthOffset = offset++;
+    
+    // Encode version
+    ASN1Object versionObj(ASN1Object::Type::INTEGER);
+    versionObj.setInteger(version_);
+    offset += versionObj.encode(buffer + offset, maxSize - offset);
+    
+    // Encode community string
+    ASN1Object communityObj(ASN1Object::Type::OCTET_STRING);
+    communityObj.setString(community_, strlen(community_));
+    offset += communityObj.encode(buffer + offset, maxSize - offset);
+    
+    // Encode PDU
+    offset += encodePDU(buffer + offset, maxSize - offset);
+    
+    // Update sequence length
+    buffer[lengthOffset] = offset - 2;
+    
+    return offset;
 }
 
-// Initialize static rate limiting members
-uint32_t Message::requestTimes[MAX_REQUESTS_PER_WINDOW] = {0};
-uint8_t Message::requestTimeIndex = 0;
-
-bool Message::checkRateLimit() {
-    uint32_t currentTime = millis();
-    uint32_t windowStart = currentTime - RATE_LIMIT_WINDOW_MS;
+uint16_t SNMPMessage::encodePDU(uint8_t* buffer, uint16_t maxSize) {
+    if (!buffer || maxSize < 2) {
+        return 0;
+    }
     
-    // Count requests within the window
-    uint8_t count = 0;
-    for (uint8_t i = 0; i < MAX_REQUESTS_PER_WINDOW; i++) {
-        if (requestTimes[i] > windowStart) {
-            count++;
+    uint16_t offset = 0;
+    
+    // Write PDU type
+    buffer[offset++] = static_cast<uint8_t>(pduType_);
+    uint16_t lengthOffset = offset++;
+    
+    // Encode request ID
+    ASN1Object requestIDObj(ASN1Object::Type::INTEGER);
+    requestIDObj.setInteger(requestID_);
+    offset += requestIDObj.encode(buffer + offset, maxSize - offset);
+    
+    // Encode error status
+    ASN1Object errorStatusObj(ASN1Object::Type::INTEGER);
+    errorStatusObj.setInteger(errorStatus_);
+    offset += errorStatusObj.encode(buffer + offset, maxSize - offset);
+    
+    // Encode error index
+    ASN1Object errorIndexObj(ASN1Object::Type::INTEGER);
+    errorIndexObj.setInteger(errorIndex_);
+    offset += errorIndexObj.encode(buffer + offset, maxSize - offset);
+    
+    // Encode variable bindings
+    offset += encodeVarBinds(buffer + offset, maxSize - offset);
+    
+    // Update PDU length
+    buffer[lengthOffset] = offset - 2;
+    
+    return offset;
+}
+
+uint16_t SNMPMessage::encodeVarBinds(uint8_t* buffer, uint16_t maxSize) {
+    if (!buffer || maxSize < 2) {
+        return 0;
+    }
+    
+    uint16_t offset = 0;
+    
+    // Start varbind sequence
+    buffer[offset++] = 0x30; // Sequence tag
+    uint16_t lengthOffset = offset++;
+    
+    // Encode each varbind
+    for (size_t i = 0; i < varBind_count_; i++) {
+        // Start varbind sequence
+        buffer[offset++] = 0x30;
+        uint16_t varbindLengthOffset = offset++;
+        
+        // Convert string OID to numeric and encode
+        uint32_t numericOID[ASN1Object::MAX_OID_LENGTH];
+        size_t oidLength;
+        if (!stringToNumericOID(varBinds_[i].oid, numericOID, &oidLength, ASN1Object::MAX_OID_LENGTH)) {
+            return 0;
         }
+        
+        ASN1Object oidObj(ASN1Object::Type::OBJECT_IDENTIFIER);
+        oidObj.setOID(numericOID, oidLength);
+        offset += oidObj.encode(buffer + offset, maxSize - offset);
+        
+        // Encode value
+        offset += varBinds_[i].value.encode(buffer + offset, maxSize - offset);
+        
+        // Update varbind length
+        buffer[varbindLengthOffset] = offset - varbindLengthOffset - 1;
     }
     
-    return count < MAX_REQUESTS_PER_WINDOW;
+    // Update sequence length
+    buffer[lengthOffset] = offset - 2;
+    
+    return offset;
 }
 
-void Message::updateRateLimit() {
-    requestTimes[requestTimeIndex] = millis();
-    requestTimeIndex = (requestTimeIndex + 1) % MAX_REQUESTS_PER_WINDOW;
-}
-
-} // namespace SNMP
+// createResponse implementation moved to SNMPMessageMIB.cpp

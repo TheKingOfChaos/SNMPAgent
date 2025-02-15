@@ -1,114 +1,81 @@
 #ifndef SNMP_MESSAGE_H
 #define SNMP_MESSAGE_H
 
-#include "ASN1Types.h"
-#include <Arduino.h>
+#include "ASN1Object.h"
+#include "MIB.h"
+#include <cstddef>
+#include <cstdint>
 
-// Forward declare global MIB class
-class MIB;
-
-namespace SNMP {
-
-// SNMP Version (v1 only as per requirements)
-constexpr uint32_t SNMP_VERSION_1 = 0;
-
-// PDU Types (as per RFC 1157)
-enum class PDUType : uint8_t {
-    GetRequest      = 0xA0,
-    GetNextRequest  = 0xA1,
-    GetResponse     = 0xA2,
-    SetRequest      = 0xA3,  // Not implemented as per requirements
-    Trap           = 0xA4   // Not implemented as per requirements
-};
-
-// Error Status Codes
-enum class ErrorStatus : int32_t {
-    NoError          = 0,
-    TooBig           = 1,
-    NoSuchName       = 2,
-    BadValue         = 3,
-    ReadOnly         = 4,
-    GenError         = 5
-};
-
-// Variable Binding structure
-class VarBind {
+class SNMPMessage {
 public:
-    VarBind() = default;
-    VarBind(const ASN1::ObjectIdentifier& oid, ASN1::Type* value = nullptr);
+    enum class PDUType {
+        GET_REQUEST = 0xA0,
+        GET_NEXT_REQUEST = 0xA1,
+        GET_RESPONSE = 0xA2,
+        SET_REQUEST = 0xA3,
+        TRAP = 0xA4
+    };
     
-    size_t encode(uint8_t* buffer, size_t size) const;
-    bool decode(const uint8_t* buffer, size_t size, size_t& bytesRead);
+    static constexpr size_t MAX_COMMUNITY_LENGTH = 32;
+    static constexpr size_t MAX_VARBINDS = 16;
+    static constexpr size_t MAX_OID_STRING_LENGTH = 64;
     
-    ASN1::ObjectIdentifier oid;
-    ASN1::Type* value;  // Can be Integer, OctetString, Null, ObjectIdentifier
-};
-
-// PDU structure (common for all PDU types)
-class PDU {
-public:
-    PDU(PDUType type = PDUType::GetRequest);
+    // Convert between string and numeric OID representations
+    static bool numericToStringOID(const uint32_t* numericOID, size_t length, char* stringOID, size_t maxLength);
+    static bool stringToNumericOID(const char* stringOID, uint32_t* numericOID, size_t* length, size_t maxLength);
     
-    size_t encode(uint8_t* buffer, size_t size) const;
-    bool decode(const uint8_t* buffer, size_t size, size_t& bytesRead);
+    struct VarBind {
+        char oid[MAX_OID_STRING_LENGTH];
+        ASN1Object value;
+    };
     
-    PDUType type;
-    int32_t requestID;
-    ErrorStatus errorStatus;
-    int32_t errorIndex;
-    VarBind varBinds[16];  // Maximum 16 variable bindings per request
-    uint8_t varBindCount;
+    SNMPMessage();
     
-    bool addVarBind(const VarBind& varBind);
-    void clear();
-};
-
-// SNMP Message structure
-class Message {
-public:
-    Message();
+    // Encoding/Decoding
+    bool decode(const uint8_t* buffer, uint16_t size);
+    uint16_t encode(uint8_t* buffer, uint16_t maxSize);
     
-    // Encode entire SNMP message
-    size_t encode(uint8_t* buffer, size_t size) const;
+    // Response creation
+    void createResponse(const SNMPMessage& request, MIB& mib);
     
-    // Decode received SNMP message
-    bool decode(const uint8_t* buffer, size_t size);
+    // Getters
+    uint8_t getVersion() const { return version_; }
+    const char* getCommunity() const { return community_; }
+    PDUType getPDUType() const { return pduType_; }
+    uint32_t getRequestID() const { return requestID_; }
+    uint32_t getErrorStatus() const { return errorStatus_; }
+    uint32_t getErrorIndex() const { return errorIndex_; }
+    const VarBind* getVarBinds() const { return varBinds_; }
+    size_t getVarBindCount() const { return varBind_count_; }
     
-    // Validate community string
-    bool validateCommunity(const char* expectedCommunity) const;
-    
-    // Helper methods for creating specific message types
-    static Message createGetRequest(const char* community, const ASN1::ObjectIdentifier& oid);
-    static Message createGetNextRequest(const char* community, const ASN1::ObjectIdentifier& oid);
-    static Message createGetResponse(const Message& request, const VarBind& response);
-    static Message createErrorResponse(const Message& request, ErrorStatus status, int32_t index = 0);
-    
-    // Request processing (implemented in SNMPMessageMIB.cpp)
-    bool processRequest(const ::MIB& mib, Message& response);
+    // Setters
+    void setVersion(uint8_t version) { version_ = version; }
+    void setCommunity(const char* community);
+    void setPDUType(PDUType type) { pduType_ = type; }
+    void setRequestID(uint32_t id) { requestID_ = id; }
+    void setErrorStatus(uint32_t status) { errorStatus_ = status; }
+    void setErrorIndex(uint32_t index) { errorIndex_ = index; }
+    bool addVarBind(const char* oid, const ASN1Object& value);
     
 private:
-    bool processGetRequest(const ::MIB& mib, Message& response);
-    bool processGetNextRequest(const ::MIB& mib, Message& response);
+    uint8_t version_;
+    char community_[MAX_COMMUNITY_LENGTH];
+    PDUType pduType_;
+    uint32_t requestID_;
+    uint32_t errorStatus_;
+    uint32_t errorIndex_;
+    VarBind varBinds_[MAX_VARBINDS];
+    size_t varBind_count_;
     
-    // Rate limiting
-    bool checkRateLimit();
-    void updateRateLimit();
+    // Helper methods
+    bool decodePDU(const uint8_t* buffer, uint16_t size, uint16_t& offset);
+    bool decodeVarBinds(const uint8_t* buffer, uint16_t size, uint16_t& offset);
+    uint16_t encodePDU(uint8_t* buffer, uint16_t maxSize);
+    uint16_t encodeVarBinds(uint8_t* buffer, uint16_t maxSize);
     
-    // Message components
-    ASN1::Integer version;         // SNMP version (always 0 for v1)
-    ASN1::OctetString community;   // Community string
-    PDU pdu;                      // Protocol Data Unit
-    
-    // Rate limiting configuration
-    static constexpr uint32_t RATE_LIMIT_WINDOW_MS = 1000;  // 1 second window
-    static constexpr uint8_t MAX_REQUESTS_PER_WINDOW = 10;  // Max 10 requests per second
-    static uint32_t requestTimes[MAX_REQUESTS_PER_WINDOW];
-    static uint8_t requestTimeIndex;
-    
-    // Request ID counter
-    static int32_t nextRequestID;  // Counter for generating request IDs
+    // Response processing helpers
+    void processGetRequest(const SNMPMessage& request, MIB& mib);
+    void processGetNextRequest(const SNMPMessage& request, MIB& mib);
 };
-
-} // namespace SNMP
 
 #endif // SNMP_MESSAGE_H

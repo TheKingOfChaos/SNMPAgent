@@ -87,12 +87,12 @@ bool CLI::splitArgs(char* input, char* argv[], int& argc) {
     argc = 0;
     char* token = strtok(input, " ");
     
-    while (token && argc < MAX_ARGS) {
+    while (token && static_cast<size_t>(argc) < MAX_ARGS) {
         argv[argc++] = token;
         token = strtok(NULL, " ");
     }
     
-    return argc <= MAX_ARGS;
+    return static_cast<size_t>(argc) <= MAX_ARGS;
 }
 
 void CLI::handleHelp() {

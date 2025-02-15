@@ -1,67 +1,42 @@
 #ifndef UDP_STACK_H
 #define UDP_STACK_H
 
-#include <Arduino.h>
 #include "W5500.h"
-
-// UDP Socket States
-#define UDP_STATE_CLOSED      0
-#define UDP_STATE_OPEN        1
-
-// Maximum UDP packet size
-#define UDP_MAX_PACKET_SIZE   1472
+#include <cstdint>
 
 class UDPStack {
 public:
-    UDPStack(W5500& w5500);
+    explicit UDPStack(W5500& eth);
+    
+    // DHCP methods
+    bool startDHCP();
+    void stopDHCP();
+    void renewDHCP();
+    bool isConnected() const;
+    
+    // UDP packet handling
+    bool receivePacket(uint8_t* buffer, uint16_t& size, uint32_t& remoteIP, uint16_t& remotePort);
+    bool sendPacket(const uint8_t* buffer, uint16_t size, uint32_t remoteIP, uint16_t remotePort);
     
     // Socket management
-    bool begin(uint16_t localPort);
-    void close();
-    
-    // UDP operations
-    bool beginPacket(const uint8_t* ip, uint16_t port);
-    bool endPacket();
-    size_t write(const uint8_t* buffer, size_t size);
-    int parsePacket();
-    int read(uint8_t* buffer, size_t size);
-    int available();
-    
-    // DHCP client
-    bool startDHCP();
-    bool renewDHCP();
-    void stopDHCP();
-    
-    // Network configuration
-    void setStaticIP(const uint8_t* ip, const uint8_t* gateway, const uint8_t* subnet);
-    bool isConnected();
+    bool openSocket(uint8_t socket, uint16_t port);
+    void closeSocket(uint8_t socket);
     
 private:
-    W5500& _w5500;
-    uint8_t _socket;
-    uint16_t _localPort;
-    uint8_t _state;
-    uint8_t _remoteIP[4];
-    uint16_t _remotePort;
+    W5500& eth_;
+    bool dhcpEnabled_;
+    uint32_t lastDHCPRenewal_;
+    static constexpr uint32_t DHCP_RENEWAL_INTERVAL = 300000;  // 5 minutes
     
-    // DHCP state
-    bool _dhcp_enabled;
-    uint32_t _dhcp_lease_time;
-    uint32_t _last_renewal;
-    
-    // Internal buffer for received data
-    uint8_t _rxBuffer[UDP_MAX_PACKET_SIZE];
-    size_t _rxSize;
-    size_t _rxIndex;
-    
-    // Helper functions
-    bool allocateSocket();
-    void releaseSocket();
+    // DHCP helper methods
     bool sendDHCPDiscover();
-    bool processDHCPOffer();
+    bool receiveDHCPOffer();
     bool sendDHCPRequest();
-    bool processDHCPAck();
-    void updateDHCPState();
+    bool receiveDHCPAck();
+    
+    // UDP helper methods
+    bool waitForData(uint8_t socket, uint32_t timeout);
+    uint16_t getAvailableData(uint8_t socket);
 };
 
 #endif // UDP_STACK_H
